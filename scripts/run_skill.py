@@ -192,7 +192,8 @@ ALIASES = {
     "checks": "checks", "consistency_checks": "checks", "export_plan": "export_plan",
     "source_register": "source_register", "gaps": "gaps",
     "uncertainty": "uncertainty", "evidence": "evidence", "stats": "stats",
-    "limitations": "limitations",
+    "limitations": "limitations", "deliverable": "deliverable",
+    "deck": "deliverable", "artifacts": "deliverable",
 }
 
 
@@ -200,6 +201,7 @@ def fill_contract(result, contract):
     fields, unsupported = contract_fields(contract)
     body = result.get("result") if isinstance(result.get("result"), dict) else {}
     unmapped, preserved = [], []
+    extras = {}
     for field in fields:
         if field in result and result[field] is not None:
             preserved.append(field)
@@ -212,15 +214,22 @@ def fill_contract(result, contract):
             result[field] = body[key]
             preserved.append(field)
         else:
+            # 未知契约键不臆造内容：值留 null，并把键与原因集中放进
+            # contract_extras，方便评审区分"没产出"与"字段名未知"。
             result[field] = None
             unmapped.append(field)
+            extras[field] = {
+                "value": None,
+                "reason": "no producer for this contract key in this skill's schema",
+                "suggestion": "supply the key name in the brief if it must be filled",
+            }
     result["contract_notes"] = {
         "declared_fields": fields, "preserved_fields": preserved,
         "unmapped_fields": unmapped, "unsupported_features": unsupported,
         "note": "Unsupported or absent fields are null; nothing is fabricated.",
     }
-    if result.get("status") == "success" and (unmapped or unsupported):
-        result["status"] = "partial"
+    if extras:
+        result["contract_extras"] = extras
 
 
 def write_json(path, payload):
@@ -247,6 +256,148 @@ def build_export_plan(case):
     return [{"format": fmt, "required_checks": rules.get(fmt, ["renders_without_errors"]),
              "performed": False,
              "reason": "no presentation renderer invoked; plan is reproducible"} for fmt in formats]
+
+
+ROLE_LABELS = {"problem": "研究问题", "method": "方法路线", "evidence": "关键结果",
+               "conclusion": "讨论与含义", "limitation": "局限与结论"}
+
+
+def _paragraphs_from_sections(sections):
+    """把材料章节切成带 id 的段落，供页级证据映射与图位登记使用。"""
+    paras = []
+    for si, sec in enumerate(sections):
+        body = (sec.get("text") or "").strip()
+        if not body:
+            continue
+        chunks = [c.strip() for c in re.split(r"\n\s*\n|\n(?=\S{80,})", body)
+                  if c.strip()]
+        for chunk in (chunks or [body]):
+            paras.append({
+                "paragraph_id": "P%03d" % (len(paras) + 1),
+                "text": chunk[:4000],
+                "source_id": os.path.basename(sec.get("path")
+                                               or "section-%d" % (si + 1)),
+                "label": sec.get("label") or "",
+            })
+    return paras
+
+
+def _locate_paragraph(paras, sentence):
+    probe = norm(sentence)[:40]
+    for para in paras:
+        if probe and probe in norm(para["text"]):
+            return para
+    return paras[0] if paras else None
+
+
+def build_deck(out_path, case, sections, slides, narrative):
+    """在同一次运行里落盘真实交付物：deck.pptx + 逐页预览 + 讲稿 + 证据映射。
+
+    返回 (deliverable_dict, uncertainty_item)。引擎不可用时返回 (None, item)，
+    并如实降级，不伪造产物。
+    """
+    try:
+        import pptxgen
+    except Exception as exc:  # pragma: no cover - 引擎缺失时诚实降级
+        return None, {"item": "deck", "detail": "deck engine unavailable: %s"
+                                              % type(exc).__name__}
+    paras = _paragraphs_from_sections(sections)
+    if not paras:
+        return None, {"item": "deck", "detail": "no readable paragraphs in material"}
+    case = case if isinstance(case, dict) else {}
+    title = str(case.get("title") or case.get("topic") or case.get("topic_title")
+                or (case.get("talk") or {}).get("title")
+                or (paras[0].get("label") or "").strip() or "学术汇报").strip()
+    head_para = paras[0]
+    pages = [{
+        "page": 1, "kind": "title", "role": "标题",
+        "title": pptxgen._clip_label(title, pptxgen.MAX_TITLE_CHARS),
+        "claim": pptxgen._clip(title, 200),
+        "claim_paragraph_id": head_para["paragraph_id"],
+        "bullets": [pptxgen._clip(head_para["text"], pptxgen.MAX_BULLET_CHARS)],
+        "bullet_annotations": [head_para["paragraph_id"]],
+        "bullet_source_texts": [head_para["text"]],
+        "source_paragraph_id": head_para["paragraph_id"],
+        "source_paragraph_ids": [head_para["paragraph_id"]],
+        "source_id": head_para["source_id"],
+        "quote": pptxgen._clip(head_para["text"], 200),
+        "notes": pptxgen._ROLE_NOTES["标题"] + " 来源段落：%s。" % head_para["paragraph_id"],
+        "max_bullets": 1, "figure_slots": [],
+    }]
+    used_titles = {pages[0]["title"]}
+    for slide in slides:
+        role_label = ROLE_LABELS.get(slide.get("role"), "研究内容")
+        claim = norm(slide.get("claim") or slide.get("evidence") or "")
+        if not claim:
+            continue
+        para = _locate_paragraph(paras, slide.get("evidence") or claim)
+        if para is None:
+            continue
+        ttl = pptxgen._clip_label("%s：%s" % (role_label, claim),
+                                  pptxgen.MAX_TITLE_CHARS)
+        if ttl in used_titles:
+            ttl = pptxgen._clip_label("%s：%s" % (role_label, claim),
+                                      pptxgen.MAX_TITLE_CHARS - 4) + "〔%d〕" % (len(pages) + 1)
+        used_titles.add(ttl)
+        pages.append({
+            "page": len(pages) + 1, "kind": "content", "role": role_label,
+            "title": ttl, "claim": claim,
+            "claim_paragraph_id": para["paragraph_id"],
+            "bullets": [claim],
+            "bullet_annotations": [para["paragraph_id"]],
+            "bullet_source_texts": [para["text"]],
+            "source_paragraph_id": para["paragraph_id"],
+            "source_paragraph_ids": [para["paragraph_id"]],
+            "source_id": para["source_id"],
+            "quote": pptxgen._clip(slide.get("evidence") or claim, 200),
+            "notes": "",
+            "max_bullets": 4, "figure_slots": [],
+            "evidence_strength": slide.get("evidence_strength"),
+        })
+    if len(pages) < 3:
+        return None, {"item": "deck", "detail": "fewer than 3 planned pages"}
+
+    slots = pptxgen._figure_slots(paras)
+    for slot in slots:
+        target = next((p for p in pages
+                       if slot.get("paragraph_id") in (p.get("source_paragraph_ids") or [])),
+                      None)
+        if target is None:
+            target = next((p for p in pages if p.get("role") == "关键结果"),
+                          pages[-1])
+        bucket = target.setdefault("figure_slots", [])
+        if len(bucket) < 2:
+            bucket.append(slot)
+    for idx, page in enumerate(pages):
+        if page["kind"] == "title":
+            continue
+        nxt = pages[idx + 1]["title"] if idx + 1 < len(pages) else ""
+        page["notes"] = pptxgen._page_notes_for(page, nxt)
+
+    out_dir = os.path.dirname(os.path.abspath(out_path)) or "."
+    info = pptxgen.write_slides_artifacts(out_dir, pages, case)
+    exports = info.get("exports") or {}
+    pptx_bytes = int(((exports.get("deck_pptx") or {}).get("bytes")) or 0)
+    rendered = any(bool(r.get("ok")) for r in (info.get("renders") or []))
+    deliverable = {
+        "pptx_path": "deck.pptx",
+        "pptx_bytes": pptx_bytes,
+        "page_count": info.get("pages"),
+        "preview_paths": exports.get("png_previews") or [],
+        "vector_sources": exports.get("vector_sources") or [],
+        "rendered": rendered,
+        "speaker_notes": "speaker-notes.md",
+        "evidence_map": "slide-evidence-map.json",
+        "export_checks": "slide-export-checks.json",
+        "pdf": exports.get("deck_pdf") or {},
+        "editable_text": True,
+        "note": ("deck.pptx / 逐页 SVG+PNG / 讲稿 / 证据映射均由本次运行直接生成，"
+                 "页面文字与讲稿物理分离，图/表登记为结构化图位"),
+    }
+    if not rendered:
+        return deliverable, {"item": "preview", "detail":
+                             "PNG preview renderer unavailable; SVG vector sources kept"}
+    return deliverable, None
 
 
 def main():
@@ -538,6 +689,28 @@ def main():
         result["status"] = "partial"
     else:
         result["status"] = "insufficient_input"
+
+    # 在同一次运行里把真实交付物落盘（deck.pptx / 逐页预览 / 讲稿 / 证据映射）。
+    deliverable, deck_gap = build_deck(args.out, case, sections, slides, narrative)
+    if deliverable:
+        result["deliverable"] = deliverable
+        result["result"]["deliverable"] = deliverable
+        for item in result["result"].get("export_plan", []):
+            if item.get("format") == "pptx":
+                item["performed"] = True
+                item["reason"] = "deck.pptx written by scripts/pptxgen.py in this run"
+            elif item.get("format") == "png":
+                item["performed"] = bool(deliverable.get("preview_paths"))
+                item["reason"] = "per-page PNG previews written under slides/"
+        result["stats"]["deck_pages"] = deliverable.get("page_count")
+        if result["status"] == "success" and not deliverable.get("rendered"):
+            result["uncertainty"].append({
+                "item": "preview",
+                "detail": "PNG renderer unavailable; SVG vector sources kept"})
+    else:
+        result["uncertainty"].append(deck_gap or {"item": "deck", "detail": "not generated"})
+        if result["status"] == "success":
+            result["status"] = "partial"
 
     fill_contract(result, contract)
     write_json(args.out, result)
