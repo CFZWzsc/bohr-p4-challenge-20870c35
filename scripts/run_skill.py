@@ -716,6 +716,7 @@ def main():
     write_json(args.out, result)
     try:
         import deckkit as _deckkit
+        os.environ["SK_INPUT_DIR"] = os.path.dirname(os.path.abspath(args.case))
         _deckkit.finalize(os.path.dirname(os.path.abspath(args.out)),
                           _result_path=args.out)
     except Exception:  # noqa: BLE001 - side artefacts are best effort
