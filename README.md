@@ -16,8 +16,13 @@ answers, private data or credentials are included.
 | File |
 |------|
 | `SKILL.md` |
+| `docs/DECK_WORKFLOW.md` |
+| `docs/ERROR_HANDLING.md` |
 | `examples/demo-case/case.json` |
+| `rules/rules_deck.md` |
+| `schema/deck_ir.schema.json` |
 | `scripts/artifacts.py` |
+| `scripts/deckkit.py` |
 | `scripts/pptxgen.py` |
 | `scripts/run_skill.py` |
 | `README.md` |
