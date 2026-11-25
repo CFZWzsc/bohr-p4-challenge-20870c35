@@ -714,6 +714,12 @@ def main():
 
     fill_contract(result, contract)
     write_json(args.out, result)
+    try:
+        import deckkit as _deckkit
+        _deckkit.finalize(os.path.dirname(os.path.abspath(args.out)),
+                          _result_path=args.out)
+    except Exception:  # noqa: BLE001 - side artefacts are best effort
+        pass
     if result["status"] == "failed":
         return 2
     if result.get("contract_notes", {}).get("unmapped_fields"):
