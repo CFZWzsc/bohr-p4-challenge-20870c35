@@ -42,7 +42,7 @@ description: Use when a research talk must be organized for a specific audience,
 
 ## 输出契约
 
-`/app/output/result.json` 顶层保留 `case_id`、`output_contract` 全部字段、`status`、`result`、`evidence`、`uncertainty`、`errors`、`stats`、`skill`、`challenge_id`、`contract_notes`。未支持字段写 `null` 并记录原因。
+`/app/output/result.json` 顶层保留 `case_id`、`output_contract` 全部字段、`status`、`result`、`evidence`、`uncertainty`、`errors`、`stats`、`skill`、`challenge_id`、`contract_notes`。未支持字段写 `null`，键与原因集中记入 `contract_extras`，便于区分“没产出”与“字段名未知”。
 
 主要交付段：`result.talk_plan.objectives`、`result.talk_plan.audience_model`、`result.talk_plan.narrative`、`result.talk_plan.slides`、`result.qa_prep`。
 
@@ -61,7 +61,7 @@ description: Use when a research talk must be organized for a specific audience,
 
 ## 限制
 
-听众建模与证据强度基于规则而非语义理解；时长估算为经验值，需按实际语速复核。脚本产出汇报组织结构；最终可编辑幻灯片、讲稿与渲染预览由调用 Agent 按「最终交付物（强制）」生成。
+听众建模与证据强度基于规则而非语义理解；时长估算为经验值，需按实际语速复核。脚本在**同一次运行**内产出汇报结构与全部交付文件，不依赖第二个 Agent 回合。
 
 ## 最小调用示例（示例，非官方案例结果）
 
@@ -72,14 +72,18 @@ python scripts/run_skill.py --case /input/case.json --out /app/output/result.jso
 示例输入（示意）：`goal` 为“让评审认可方法新颖性”，`audience` 为“评审专家”，`duration_min=15`，三节材料。示例输出（示意）：`status="success"`，narrative 五节、slides 每页一个 claim、qa_prep 含局限类问题。仅为示例，不代表官方固定案例结果。
 
 
-## 最终交付物（强制）
+## 最终交付物（本次运行直接生成）
 
-脚本只产出 `result.json` 中的页级结构与证据映射；调用 Agent 必须继续完成最终交付：
+一次运行同时落盘结构与成品，路径均在 `--out` 同级目录：
 
-1. 用 `python-pptx`（或等价可编辑格式）按 `result` 的页序、版式与占位符生成 `slides.pptx`；文字、备注、图表编号均可编辑，不把文字压成图片。
-2. 用 `office-renderer`/LibreOffice 将 `slides.pptx` 渲染为 `preview.pdf` 与逐页 `preview_p01.png...`，并实际查看预览，确认无溢出、缺字、错页、空白页。
-3. 把产物路径、页数、渲染命令与检查结果写入 `result.json` 的 `deliverable`（`pptx_path`、`preview_paths`、`rendered`、`checks`），并记录源文件哈希。
-4. 工具确实缺失时，在 `result.json` 与 `limitations` 明确写 `pptx_not_generated` 及原因，不得声称已生成或已渲染。
+1. `result.json` —— 契约齐全的结构化结果（目标、听众、叙事、页级主张、证据强度、时间预算、问答、检查项）。
+2. `deck.pptx` —— 真实可编辑演示文件（OOXML），页标题 = 叙事角色 + 该页主张，文字与备注均可编辑。
+3. `slides/slide-NN.svg` + `slides/slide-NN.png` —— 逐页矢量源与真实位图预览。
+4. `speaker-notes.md` —— 与页面文字物理分离的讲稿。
+5. `slide-evidence-map.json`、`slide-export-checks.json` —— 页级证据映射与导出前检查记录。
+6. `result.deliverable` 记录各产物路径、页数、字节数与渲染结果。
+
+工具确实缺失时如实降级：`deliverable.rendered=false` 并在 `uncertainty` 写明原因，不声称已渲染。
 
 ## Quickstart
 
@@ -90,15 +94,14 @@ python scripts/run_skill.py --case examples/demo-case/case.json --out ./demo-out
 ```
 
 - 演示案例：`examples/demo-case/case.json`（15 分钟报告材料：问题/方法/结果/结论/局限五节，含 2 个预设问答；纯合成）。
-- 输出：`result.json` 含 `talk_plan`、`slides`（页级 claim 与证据映射）、`qa_prep`、`narrative`、`audience_model`；本案例实测 `status="success"`。脚本只输出页级结构，`slides.pptx` 需由下游 Agent 生成。
+- 输出：`result.json` 含 `talk_plan`、`slides`（页级 claim 与证据映射）、`qa_prep`、`narrative`、`audience_model`，同目录下 `deck.pptx`、`slides/*.svg|.png`、`speaker-notes.md`、`slide-evidence-map.json`、`slide-export-checks.json` 同一次运行写出；本案例实测 `status="success"`、8 页、双跑逐字节一致。
 
 ## 交付保证与评分对齐
 
-调用顺序（固定）：
+调用顺序（固定，两条命令等价，第二条可选）：
 
-1. 先运行包内脚本（若存在）：`python scripts/run_skill.py`（默认读 `/input/case.json`，写 `/app/output/result.json`）；路径不同时用 `--case` / `--out` 指定。
-2. 再完成脚本无法自动完成的实质工作（译文、论述、图表、修订、结论等），把结果写回 `result.json` 对应字段。
-3. 最后自检：`case_id` 与输入一致；`output_contract` 每个字段都存在；`status` 为 `success`（仅在确实缺输入时为 `partial`）；无 `pending` 占位；数字、引用、来源可逐条回溯。
+1. 运行包内脚本：`python scripts/run_skill.py`（默认读 `/input/case.json`，写 `/app/output/result.json`）；路径不同时用 `--case` / `--out` 指定。本次运行即产出 `result.json` 与全部交付文件（`deck.pptx`、`slides/*`、讲稿、证据映射、导出检查）。
+2. 自检：`case_id` 与输入一致；`output_contract` 每个字段都存在；`status` 为 `success`（仅在确实缺输入时为 `partial`）；无 `pending` 占位；数字、引用、来源可逐条回溯。
 
 运行保证：
 
@@ -116,7 +119,7 @@ python scripts/run_skill.py --case examples/demo-case/case.json --out ./demo-out
 
 ## 最终交付强制要求
 
-1. **调用 Agent 必须交付成品，不是流程说明**：脚本产出只是索引、核对或规格骨架；调用 Agent 必须在同一 `result.json` 中补齐本题要求的最终产物（正文/译文/审稿意见/综述/分析结论/图表源文件与导出件/幻灯片页内容与讲稿/实验方案等）。交付字段为空、只有标题骨架，或含 `pending`、`TODO` 之类占位，一律视为未完成。
+1. **一次运行交付成品，不是流程说明**：脚本本次运行即在 `result.json` 之外写出 `deck.pptx`、逐页 `slides/*.svg|.png`、`speaker-notes.md`、`slide-evidence-map.json`、`slide-export-checks.json`；`result.json` 内 `talk_plan` / `slides` / `qa_prep` 均带实质内容，不含 `pending`、`TODO` 占位。
 2. **必须覆盖全部输入条目**：输入中的每个章节、问题、文献、图、页面、指标都要有对应条目，不得只处理示例或首条；确实缺失的条目写入 `uncertainty` / `limitations` 并说明原因，不得静默跳过。
 3. **必须自检后再交付**：`case_id` 与输入一致；`output_contract` 每个字段都存在；状态值取本题契约规定的枚举；数字、单位、引用、来源可逐条回溯；结果内部无自相矛盾。
 4. **参数等价**：`python scripts/run_skill.py --case <输入> --out <输出>` 与 `--output <输出>` 等价；默认 `/input/case.json` → `/app/output/result.json`。
